@@ -27,8 +27,8 @@ on:
         default: ""
 
 env:
-  APP_DIR: "21"
-  JAVA_VERSION: ""
+  APP_DIR: ""
+  JAVA_VERSION: "21"
 
 permissions:
   contents: read
