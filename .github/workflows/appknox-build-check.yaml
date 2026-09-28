@@ -1,156 +1,98 @@
-# Appknox build check: does this fork compile on a stock GitHub runner?
-#
-# Build only. No secrets, no Appknox upload, no model calls -- safe to trigger
-# on push because it spends nothing but runner minutes. Build triage for the
-# autofix corpus; the scan/fix path lives in appknox-autofix.yaml.
-#
-# APP_DIR and JAVA_VERSION are baked in per repository when this file is
-# installed; workflow_dispatch can override both for a retry.
+# Appknox build check: does this repo compile on a stock GitHub runner?
+# Build only: nothing is installed, launched or tested. No secrets, no upload to Appknox.
 name: Appknox Build Check
 
 on:
   push:
     branches: [ci/build-check]
   workflow_dispatch:
-    inputs:
-      javaVersion:
-        description: "JDK that RUNS Gradle (8 for Gradle<7, 17 for AGP 8, 21 for AGP 9)"
-        required: false
-        default: ""
-      appDir:
-        description: "Directory holding gradlew (blank = baked-in default)"
-        required: false
-        default: ""
-      gradleTask:
-        description: "Gradle task (blank = baked-in default)"
-        required: false
-        default: ""
-
-env:
-  APP_DIR: "."
-  JAVA_VERSION: "21"
-  # One named debug variant. `bundle` builds every flavor x build type, which
-  # ran LibreTube and Lawnchair past the 90-minute timeout and OOM-killed Signal.
-  GRADLE_TASK: ":app:assembleGplayDebug"
 
 permissions:
   contents: read
 
+env:
+  JAVA_VERSION: "21"
+  NDK_VERSION: ""        # exact version, or a prefix such as "29." (newest match wins)
+  CMAKE_VERSION: ""
+  NODE_VERSION: ""
+  FLUTTER_VERSION: ""
+  GO_VERSION_FILE: ""
+  RUST_TOOLCHAIN: ""
+  SUBMODULES: "recursive"
+  BUILD_CMD: "chmod +x gradlew && ./gradlew --no-daemon :app:assembleGplayDebug"
+  ARTIFACT_GLOB: "app/build/outputs/apk/gplay/debug/*.apk"
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      # The large corpus apps (Signal, DuckDuckGo, Lawnchair) exhaust the
-      # runner's default free disk during a full bundle.
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules/@angular || true
           df -h /
 
       - uses: actions/checkout@v4
+        with:
+          submodules: ${{ env.SUBMODULES }}
 
-      # Fetched separately so one private submodule (element-x-android points
-      # at element-android-enterprise) does not fail the whole checkout. The
-      # public ones still land; the build then shows whether the private one
-      # was actually needed.
-      - name: Fetch submodules (best effort)
-        run: git submodule update --init --recursive || echo "::warning::some submodules could not be fetched"
+      # JDK 17 first so JAVA_HOME_17_X64 always exists; JAVA_VERSION last so it wins JAVA_HOME.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
 
-      # Inspect the checkout for things a plain ./gradlew cannot handle alone.
-      - name: Detect build prerequisites
-        id: detect
-        env:
-          IN_APP_DIR: ${{ inputs.appDir }}
+      - name: Install NDK / CMake
+        if: env.NDK_VERSION != '' || env.CMAKE_VERSION != ''
         run: |
-          app_dir="${IN_APP_DIR:-$APP_DIR}"; app_dir="${app_dir:-.}"
-          props="$app_dir/gradle/wrapper/gradle-wrapper.properties"
-          if [ ! -f "$app_dir/gradle/wrapper/gradle-wrapper.jar" ] && [ -f "$props" ]; then
-            v=$(grep distributionUrl "$props" | sed -E 's/.*gradle-([0-9.]+)-.*/\1/')
-            echo "wrapper_missing_version=$v" >> "$GITHUB_OUTPUT"
-            echo "gradle-wrapper.jar missing; will run Gradle $v directly"
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          pkgs=()
+          if [ -n "$NDK_VERSION" ]; then
+            ndk=$("$sdk" --list 2>/dev/null | grep -oE "ndk;${NDK_VERSION}[0-9.]*" | sort -V | tail -1)
+            if [ -z "$ndk" ]; then echo "::error::no NDK matches $NDK_VERSION"; exit 1; fi
+            pkgs+=("$ndk")
           fi
-          if find . -name pubspec.yaml -not -path '*/.pub-cache/*' | grep -q .; then
-            echo "flutter=true" >> "$GITHUB_OUTPUT"; echo "Flutter module detected"
+          if [ -n "$CMAKE_VERSION" ]; then pkgs+=("cmake;$CMAKE_VERSION"); fi
+          yes | "$sdk" "${pkgs[@]}" >/dev/null
+          if [ -n "$NDK_VERSION" ]; then
+            dir="$ANDROID_HOME/ndk/${ndk#ndk;}"
+            echo "ANDROID_NDK_HOME=$dir" >> "$GITHUB_ENV"
+            echo "ANDROID_NDK_ROOT=$dir" >> "$GITHUB_ENV"
           fi
 
-      # Same two-JDK split as appknox-autofix.yaml: a ladder for toolchain
-      # resolution, then the Gradle-running JDK installed last so it wins
-      # JAVA_HOME.
-      - name: Install the toolchain JDK ladder
-        uses: actions/setup-java@v4
+      - uses: actions/setup-node@v4
+        if: env.NODE_VERSION != ''
         with:
-          distribution: temurin
-          java-version: |
-            8
-            11
-            17
-            21
-
-      - name: Set up the JDK that runs Gradle
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ inputs.javaVersion || env.JAVA_VERSION }}
-
-      - uses: gradle/actions/setup-gradle@v4
-        if: steps.detect.outputs.wrapper_missing_version != ''
-        with:
-          gradle-version: ${{ steps.detect.outputs.wrapper_missing_version }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - uses: subosito/flutter-action@v2
-        if: steps.detect.outputs.flutter == 'true'
+        if: env.FLUTTER_VERSION != ''
         with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
 
-      # Flutter add-to-app modules refuse to configure until `pub get` has
-      # generated their .android/ scaffolding and local.properties.
-      - name: Flutter pub get
-        if: steps.detect.outputs.flutter == 'true'
-        run: |
-          find . -name pubspec.yaml -not -path '*/.pub-cache/*' | while read -r p; do
-            (cd "$(dirname "$p")" && flutter pub get) || echo "::warning::pub get failed in $(dirname "$p")"
-          done
+      - uses: actions/setup-go@v5
+        if: env.GO_VERSION_FILE != ''
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
 
-      - name: Build the app
-        id: build
-        env:
-          IN_APP_DIR: ${{ inputs.appDir }}
-          IN_TASK: ${{ inputs.gradleTask }}
-          WRAPPER_MISSING: ${{ steps.detect.outputs.wrapper_missing_version }}
-        run: |
-          set -o pipefail
-          app_dir="${IN_APP_DIR:-$APP_DIR}"
-          cd "${app_dir:-.}"
-          echo "building in $(pwd) with $(java -version 2>&1 | head -1)"
+      - uses: dtolnay/rust-toolchain@master
+        if: env.RUST_TOOLCHAIN != ''
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
-          # Some apps read sdk.dir from local.properties and fail without it
-          # (mastodon-android). Never overwrite one the repo committed.
-          [ -f local.properties ] || echo "sdk.dir=$ANDROID_HOME" > local.properties
-
-          TOOLCHAINS="-Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64,JAVA_HOME_11_X64,JAVA_HOME_17_X64,JAVA_HOME_21_X64"
-          if [ -n "$WRAPPER_MISSING" ]; then
-            gradle_cmd=gradle   # wrapper jar not committed; setup-gradle installed the pinned version
-          else
-            chmod +x ./gradlew; gradle_cmd=./gradlew
-          fi
-          task="${IN_TASK:-$GRADLE_TASK}"
-          $gradle_cmd --no-daemon $TOOLCHAINS "${task:-assembleDebug}"
-
-          cd "$GITHUB_WORKSPACE"
-          artifact=$(find . -path '*/build/outputs/*' \( -name '*.aab' -o -name '*.apk' \) \
-            ! -name '*unsigned*' ! -name '*unaligned*' -print0 \
-            | xargs -0 ls -S 2>/dev/null | head -1)
-          if [ -z "$artifact" ]; then
-            echo "::error::the build produced no .aab or .apk under build/outputs"
-            find . -path '*/build/outputs/*' -type f | head -20
-            exit 1
-          fi
-          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
-          echo "built $artifact ($(du -h "$artifact" | cut -f1))"
+      - name: Build (build only, no tests, no run)
+        run: bash -euo pipefail -c "$BUILD_CMD"
 
       - uses: actions/upload-artifact@v4
         with:
           name: build-output
-          path: ${{ steps.build.outputs.artifact }}
+          path: ${{ env.ARTIFACT_GLOB }}
+          if-no-files-found: error
           retention-days: 14
