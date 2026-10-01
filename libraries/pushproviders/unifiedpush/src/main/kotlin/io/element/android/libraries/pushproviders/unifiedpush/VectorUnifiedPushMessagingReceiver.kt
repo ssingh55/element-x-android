@@ -58,23 +58,27 @@ class VectorUnifiedPushMessagingReceiver : MessagingReceiver() {
      * @param instance connection, for multi-account
      */
     override fun onMessage(context: Context, message: PushMessage, instance: String) {
+        // Validate and sanitize incoming data
+        val validatedInstance = instance.trim().takeIf { it.isNotEmpty() } ?: return
+        if (message.content.isEmpty()) return
+
         // Start the foreground service to ensure the device stays awake while we handle the push and schedule and run the work.
         fetchPushForegroundServiceManager.start()
 
         Timber.tag(loggerTag.value).d("New message, decrypted: ${message.decrypted}")
         coroutineScope.launch {
-            val pushData = pushParser.parse(message.content, instance)
+            val pushData = pushParser.parse(message.content, validatedInstance)
             if (pushData == null) {
                 Timber.tag(loggerTag.value).w("Invalid data received from UnifiedPush")
                 pushHandler.handleInvalid(
-                    providerInfo = "${UnifiedPushConfig.NAME} - $instance",
+                    providerInfo = "${UnifiedPushConfig.NAME} - $validatedInstance",
                     data = String(message.content),
                 )
                 fetchPushForegroundServiceManager.stop()
             } else {
                 val handled = pushHandler.handle(
                     pushData = pushData,
-                    providerInfo = "${UnifiedPushConfig.NAME} - $instance",
+                    providerInfo = "${UnifiedPushConfig.NAME} - $validatedInstance",
                 )
 
                 // If we failed to handle the push, we should stop the foreground service early to avoid keeping the device awake for too long.
@@ -90,23 +94,27 @@ class VectorUnifiedPushMessagingReceiver : MessagingReceiver() {
      * You should send the endpoint to your application server and sync for missing notifications.
      */
     override fun onNewEndpoint(context: Context, endpoint: PushEndpoint, instance: String) {
-        Timber.tag(loggerTag.value).w("onNewEndpoint: $endpoint")
+        // Validate and sanitize incoming data
+        val validatedEndpoint = endpoint.url.trim().takeIf { it.isNotEmpty() } ?: return
+        val validatedInstance = instance.trim().takeIf { it.isNotEmpty() } ?: return
+
+        Timber.tag(loggerTag.value).w("onNewEndpoint: $validatedEndpoint")
         coroutineScope.launch {
-            val gateway = unifiedPushGatewayResolver.getGateway(endpoint.url)
+            val gateway = unifiedPushGatewayResolver.getGateway(validatedEndpoint)
                 .let { gatewayResult ->
-                    unifiedPushGatewayUrlResolver.resolve(gatewayResult, instance)
+                    unifiedPushGatewayUrlResolver.resolve(gatewayResult, validatedInstance)
                 }
-            unifiedPushStore.storePushGateway(instance, gateway)
-            val result = newGatewayHandler.handle(endpoint.url, gateway, instance)
+            unifiedPushStore.storePushGateway(validatedInstance, gateway)
+            val result = newGatewayHandler.handle(validatedEndpoint, gateway, validatedInstance)
                 .onFailure {
                     Timber.tag(loggerTag.value).e(it, "Failed to handle new gateway")
                 }
                 .onSuccess {
-                    unifiedPushStore.storeUpEndpoint(instance, endpoint.url)
+                    unifiedPushStore.storeUpEndpoint(validatedInstance, validatedEndpoint)
                 }
             endpointRegistrationHandler.registrationDone(
                 RegistrationResult(
-                    clientSecret = instance,
+                    clientSecret = validatedInstance,
                     result = result,
                 )
             )
@@ -117,11 +125,14 @@ class VectorUnifiedPushMessagingReceiver : MessagingReceiver() {
      * Called when the registration is not possible, eg. no network.
      */
     override fun onRegistrationFailed(context: Context, reason: FailedReason, instance: String) {
-        Timber.tag(loggerTag.value).e("onRegistrationFailed for $instance, reason: $reason")
+        // Validate incoming data
+        val validatedInstance = instance.trim().takeIf { it.isNotEmpty() } ?: return
+
+        Timber.tag(loggerTag.value).e("onRegistrationFailed for $validatedInstance, reason: $reason")
         coroutineScope.launch {
             endpointRegistrationHandler.registrationDone(
                 RegistrationResult(
-                    clientSecret = instance,
+                    clientSecret = validatedInstance,
                     result = Result.failure(Exception("Registration failed. Reason: $reason")),
                 )
             )
@@ -132,9 +143,12 @@ class VectorUnifiedPushMessagingReceiver : MessagingReceiver() {
      * Called when this application is unregistered from receiving push messages.
      */
     override fun onUnregistered(context: Context, instance: String) {
-        Timber.tag(loggerTag.value).w("onUnregistered $instance")
+        // Validate incoming data
+        val validatedInstance = instance.trim().takeIf { it.isNotEmpty() } ?: return
+
+        Timber.tag(loggerTag.value).w("onUnregistered $validatedInstance")
         coroutineScope.launch {
-            removedGatewayHandler.handle(instance)
+            removedGatewayHandler.handle(validatedInstance)
         }
     }
 }
