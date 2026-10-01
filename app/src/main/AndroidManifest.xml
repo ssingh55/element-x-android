@@ -8,6 +8,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.BIND_INPUT_METHOD" />
+
     <application
         android:name=".ElementXApplication"
         android:allowBackup="false"
@@ -172,6 +174,18 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_providers" />
         </provider>
+
+        <service
+            android:name=".SecureInputMethodService"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.inputmethod.InputMethodService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/input_method_config" />
+        </service>
     </application>
 
 </manifest>

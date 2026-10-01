@@ -9,6 +9,7 @@
 package io.element.android.x
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -153,6 +154,18 @@ class MainActivity : NodeActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Timber.tag(loggerTag.value).d("onNewIntent")
+        
+        // Validate URI for ACTION_SEND and ACTION_SEND_MULTIPLE intents
+        if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            if (uri != null && !isSafeUri(uri)) {
+                // Log the attempt to share an unsafe URI
+                Timber.tag(loggerTag.value).w("Rejected unsafe file:// URI: %s", uri)
+                finish() // Terminate activity to prevent processing unsafe URI
+                return
+            }
+        }
+        
         // If the mainNode is not init yet, keep the intent for later.
         // It can happen when the activity is killed by the system. The methods are called in this order :
         // onCreate(savedInstanceState=true) -> onNewIntent -> onResume -> onMainNodeInit
@@ -161,6 +174,12 @@ class MainActivity : NodeActivity() {
         } else {
             setIntent(intent)
         }
+    }
+
+    private fun isSafeUri(uri: Uri): Boolean = when (uri.scheme) {
+        "content" -> true // Content URIs are generally safe as they are mediated by ContentProviders
+        "file" -> uri.path?.startsWith("/data/") == false // Reject file:// URIs pointing to private app data
+        else -> false // Reject other schemes by default
     }
 
     override fun onPause() {

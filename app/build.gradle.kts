@@ -116,6 +116,7 @@ android {
         }
 
         getByName("release") {
+            isDebuggable = false
             resValue("string", "app_name", baseAppName)
             resValue(
                 "string",
