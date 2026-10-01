@@ -116,6 +116,9 @@ android {
         }
 
         getByName("release") {
+            debuggable = false
+            minifyEnabled = true
+            shrinkResources = true
             resValue("string", "app_name", baseAppName)
             resValue(
                 "string",
